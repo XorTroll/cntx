@@ -115,7 +115,7 @@ fn nca_test() {
 }
 
 #[test]
-fn test_510_firmware_version() {
+fn test_read_system_version() {
     println!("NCA test...");
 
     let keyset = key::Keyset::from(File::open("prod.keys").unwrap()).unwrap();

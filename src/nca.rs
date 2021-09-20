@@ -7,7 +7,7 @@ use block_modes::Ecb;
 use block_modes::BlockMode;
 use block_modes::block_padding::NoPadding;
 use xts_mode::Xts128;
-use crate::key::Keyset;
+use crate::key::{self, Keyset};
 use crate::pfs0::PFS0;
 use crate::romfs::RomFs;
 use crate::util::{Aes128CtrReader, ReadSeek, get_nintendo_tweak, new_shared};
@@ -302,6 +302,10 @@ impl NCA {
         };
         reader.borrow_mut().read_exact(header_buf)?;
         xts.decrypt_area(header_buf, SECTOR_SIZE, 0, get_nintendo_tweak);
+
+        if header.magic != Header::MAGIC {
+            return Err(Error::new(ErrorKind::InvalidInput, "Invalid NCA magic (only NCA3 is supported for now)"));
+        }
     
         let mut fs_headers: [FileSystemHeader; MAX_FILESYSTEM_COUNT] = [unsafe { std::mem::zeroed() }; MAX_FILESYSTEM_COUNT];
         let fs_headers_buf = unsafe {
@@ -311,11 +315,15 @@ impl NCA {
         xts.decrypt_area(fs_headers_buf, SECTOR_SIZE, 2, get_nintendo_tweak);
 
         let key_gen = header.get_key_generation();
-        let key_area_key = match header.key_area_encryption_key_index {
-            KeyAreaEncryptionKeyIndex::Application => &keyset.key_area_keys_application[key_gen as usize],
-            KeyAreaEncryptionKeyIndex::Ocean => &keyset.key_area_keys_ocean[key_gen as usize],
-            KeyAreaEncryptionKeyIndex::System => &keyset.key_area_keys_system[key_gen as usize]
+        let key_area_keys = match header.key_area_encryption_key_index {
+            KeyAreaEncryptionKeyIndex::Application => &keyset.key_area_keys_application,
+            KeyAreaEncryptionKeyIndex::Ocean => &keyset.key_area_keys_ocean,
+            KeyAreaEncryptionKeyIndex::System => &keyset.key_area_keys_system
         };
+        if key_gen as usize >= key_area_keys.len() {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("Key generation {} not supported by the loaded keyset", key_gen)));
+        }
+        let key_area_key = &key_area_keys[key_gen as usize];
 
         let ecb_iv = get_nintendo_tweak(0);
         let ecb = Ecb::<Aes128, NoPadding>::new_var(key_area_key, &ecb_iv).unwrap();

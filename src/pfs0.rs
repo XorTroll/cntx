@@ -10,6 +10,10 @@ pub struct Header {
     pub reserved: [u8; 0x4]
 }
 
+impl Header {
+    pub const MAGIC: u32 = u32::from_le_bytes(*b"PFS0");
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 #[repr(C)]
 pub struct FileEntry {
@@ -27,12 +31,10 @@ pub struct PFS0 {
 }
 
 impl PFS0 {
-    pub const MAGIC: u32 = u32::from_le_bytes(*b"PFS0");
-
     pub fn new(reader: Rc<RefCell<dyn ReadSeek>>) -> Result<Self> {
         let header: Header = reader_read_val(&reader)?;
-        if header.magic != Self::MAGIC {
-            return Err(Error::new(ErrorKind::InvalidInput, format!("Invalid PFS0 magic: {:#X}", header.magic)));
+        if header.magic != Header::MAGIC {
+            return Err(Error::new(ErrorKind::InvalidInput, "Invalid PFS0 magic"));
         }
 
         let mut file_entries: Vec<FileEntry> = Vec::with_capacity(header.file_count as usize);
