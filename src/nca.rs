@@ -9,6 +9,7 @@ use block_modes::block_padding::NoPadding;
 use xts_mode::Xts128;
 use crate::key::Keyset;
 use crate::pfs0::PFS0;
+use crate::romfs::RomFs;
 use crate::util::{Aes128CtrReader, ReadSeek, get_nintendo_tweak, new_shared};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -271,8 +272,8 @@ pub struct FileSystemHeader {
 
 pub struct FileSystem {
     pub header: FileSystemHeader,
-    pub pfs0: Option<PFS0>
-    // TODO: romfs
+    pub pfs0: Option<PFS0>,
+    pub romfs: Option<RomFs>
 }
 
 pub struct NCA {
@@ -325,7 +326,8 @@ impl NCA {
             if size > 0 {
                 let mut fs = FileSystem {
                     header: *fs_header,
-                    pfs0: None
+                    pfs0: None,
+                    romfs: None
                 };
 
                 match fs_header.fs_type {
@@ -334,9 +336,13 @@ impl NCA {
                         let pfs0_reader = new_shared(Aes128CtrReader::new(reader.clone(), pfs0_abs_offset, dec_key_area.aes_ctr_key.to_vec()));
 
                         fs.pfs0 = Some(PFS0::new(pfs0_reader)?);
-                        println!("PFS0 files: {:?}", fs.pfs0.as_ref().unwrap().list_files()?);
                     },
-                    fs_type => println!("TODO: FS type {:?}", fs_type)
+                    FileSystemType::RomFs => {
+                        let romfs_abs_offset = start + unsafe { fs_header.hash_info.hierarchical_integrity.levels.last().unwrap().offset };
+                        let romfs_reader = new_shared(Aes128CtrReader::new(reader.clone(), romfs_abs_offset, dec_key_area.aes_ctr_key.to_vec()));
+
+                        fs.romfs = Some(RomFs::new(romfs_reader)?);
+                    }
                 };
 
                 filesystems.push(fs);

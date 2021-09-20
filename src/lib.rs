@@ -5,6 +5,8 @@ pub mod key;
 
 pub mod pfs0;
 
+pub mod romfs;
+
 pub mod nca;
 
 use std::{fs::File, io::Write};
@@ -38,6 +40,42 @@ fn pfs0_test() {
 }
 
 #[test]
+fn romfs_test() {
+    println!("RomFs test...");
+
+    let romfs_reader = new_shared(File::open("romfs.bin").unwrap());
+
+    let mut romfs = romfs::RomFs::new(romfs_reader).unwrap();
+
+    fn log_file(path: &str, romfs: &mut romfs::RomFs) {
+        let path_str = String::from(path);
+        let exists = romfs.exists_file(path_str.clone());
+        if exists {
+            let file_size = romfs.get_file_size(path_str.clone()).unwrap();
+            println!("Found file '{}'! Size: {}", path, file_size);
+
+            if file_size > 0 {
+                println!("Reading file...");
+                let mut file_data = vec![0u8; file_size];
+                romfs.read_file(path_str, 0, &mut file_data).unwrap();
+                println!("Read data str: {}", String::from_utf8(file_data).unwrap());
+            }
+        }
+        else {
+            println!("File '{}' not found...", path);
+        }
+    }
+
+    log_file("a.txt", &mut romfs);
+    log_file("qwe/b.txt", &mut romfs);
+    log_file("qwe2/a.txt", &mut romfs);
+
+    log_file("qwe/a.txt", &mut romfs);
+    log_file("b.txt", &mut romfs);
+    log_file("qwe2/b.txt", &mut romfs);
+}
+
+#[test]
 fn nca_test() {
     println!("NCA test...");
 
@@ -61,6 +99,17 @@ fn nca_test() {
                 out_file.write(&file_buf).unwrap();
                 println!("Saved!");
             }
+        }
+        else if let Some(romfs) = fs.romfs.as_mut() {
+            let empty_file = String::from("AtLeastOneFile");
+
+            let exists_file = romfs.exists_file(empty_file.clone());
+            assert!(exists_file);
+            println!("Exists empty file!");
+
+            let file_size = romfs.get_file_size(empty_file).unwrap();
+            assert_eq!(file_size, 0);
+            println!("The file is empty as expected!");
         }
     }
 }
