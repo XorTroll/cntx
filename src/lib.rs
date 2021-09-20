@@ -9,7 +9,7 @@ pub mod romfs;
 
 pub mod nca;
 
-use std::{fs::File, io::Write};
+use std::{fs::{File, read_dir}, io::Write};
 use crate::util::new_shared;
 
 #[test]
@@ -26,7 +26,7 @@ fn pfs0_test() {
     for file in files.iter() {
         println!("Saving '{}'...", file);
 
-        let size = pfs0.get_file_size(idx);
+        let size = pfs0.get_file_size(idx).unwrap();
         let mut file_buf = vec![0u8; size];
         pfs0.read_file(idx, 0, &mut file_buf).unwrap();
 
@@ -84,14 +84,14 @@ fn nca_test() {
     let nca_reader = new_shared(File::open("test.nca").unwrap());
     let mut nca = nca::NCA::new(nca_reader, keyset).unwrap();
 
-    for fs in nca.filesystems.iter_mut() {
-        if let Some(pfs0) = fs.pfs0.as_mut() {
+    for i in 0..nca.get_filesystem_count() {
+        if let Ok(mut pfs0) = nca.open_pfs0_filesystem(i) {
             let files = pfs0.list_files().unwrap();
 
             for i in 0..files.len() {
                 let file_name = &files[i];
                 println!("Saving file '{}' from NCA PFS0 section...", file_name);
-                let file_size = pfs0.get_file_size(i);
+                let file_size = pfs0.get_file_size(i).unwrap();
                 let mut file_buf = vec![0u8; file_size];
                 pfs0.read_file(i, 0, &mut file_buf).unwrap();
 
@@ -100,7 +100,7 @@ fn nca_test() {
                 println!("Saved!");
             }
         }
-        else if let Some(romfs) = fs.romfs.as_mut() {
+        else if let Ok(mut romfs) = nca.open_romfs_filesystem(i) {
             let empty_file = String::from("AtLeastOneFile");
 
             let exists_file = romfs.exists_file(empty_file.clone());
@@ -110,6 +110,46 @@ fn nca_test() {
             let file_size = romfs.get_file_size(empty_file).unwrap();
             assert_eq!(file_size, 0);
             println!("The file is empty as expected!");
+        }
+    }
+}
+
+#[test]
+fn test_510_firmware_version() {
+    println!("NCA test...");
+
+    let keyset = key::Keyset::from(File::open("prod.keys").unwrap()).unwrap();
+
+    for entry in read_dir("registered").unwrap() {
+        if let Ok(dir_entry) = entry {
+            println!("Reading system NCA: {:?}", dir_entry.path());
+            
+            let nca_reader = new_shared(File::open(dir_entry.path()).unwrap());
+            if let Ok(mut nca) = nca::NCA::new(nca_reader, keyset.clone()) {
+                println!(" - Program ID: {:#018X}", nca.header.program_id);
+
+                if nca.header.program_id == 0x0100000000000809 {
+                    if let Ok(mut romfs) = nca.open_romfs_filesystem(0) {
+                        let system_version_file = String::from("file");
+                        if romfs.exists_file(system_version_file.clone()) {
+                            println!("SystemVersion found! NCA: {:?}", dir_entry.path());
+
+                            if romfs.exists_file(String::from("digest")) {
+                                println!("Also has digest file! Must be 5.0.0+");
+                            }
+
+                            let mut system_version_str: [u8; 0x80] = [0; 0x80];
+                            romfs.read_file(system_version_file, 0x80, &mut system_version_str).unwrap();
+                            println!("System version: {}", String::from_utf8(system_version_str.to_vec()).unwrap());
+                            println!("Done!");
+                            break;
+                        }
+                    }
+                }
+            }
+            else {
+                panic!("NCA failed...");
+            }
         }
     }
 }

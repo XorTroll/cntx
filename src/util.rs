@@ -74,16 +74,18 @@ pub struct Aes128CtrReader {
     base_offset: u64,
     offset: u64,
     base_reader: Rc<RefCell<dyn ReadSeek>>,
+    ctr: u64,
     key: Vec<u8>
 }
 
 impl Aes128CtrReader {
-    pub fn new(base_reader: Rc<RefCell<dyn ReadSeek>>, base_offset: u64, key: Vec<u8>) -> Self {
+    pub fn new(base_reader: Rc<RefCell<dyn ReadSeek>>, base_offset: u64, ctr: u64, key: Vec<u8>) -> Self {
         base_reader.borrow_mut().seek(SeekFrom::Start(base_offset)).unwrap();
         Self {
             base_offset: base_offset,
             offset: base_offset,
             base_reader: base_reader,
+            ctr: ctr,
             key: key
         }
     }
@@ -113,7 +115,7 @@ impl Read for Aes128CtrReader {
         let read_size = self.base_reader.borrow_mut().read(&mut read_buf)? as i64;
         self.seek(SeekFrom::Current(read_size - read_buf_size_diff))?;
 
-        let iv = get_nintendo_tweak((aligned_offset >> 4) as u128);
+        let iv = get_nintendo_tweak(((aligned_offset as u128) >> 4) | ((self.ctr as u128) << 64));
         let mut ctr = Ctr128::<Aes128>::new_var(&self.key, &iv).unwrap();
         ctr.decrypt(&mut read_buf);
 

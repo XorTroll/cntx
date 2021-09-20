@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
 use std::rc::Rc;
 use aes::Aes128;
 use aes::NewBlockCipher;
@@ -47,9 +47,9 @@ pub struct RSASignature {
 #[repr(C)]
 pub struct SdkAddonVersion {
     unk: u8,
-    major: u8,
+    micro: u8,
     minor: u8,
-    micro: u8
+    major: u8
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -111,30 +111,30 @@ pub const MEDIA_UNIT_SIZE: usize = 0x200;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(C)]
 pub struct Header {
-    header_rsa_sig_1: RSASignature,
-    header_rsa_sig_2: RSASignature,
-    magic: u32,
-    dist_type: DistributionType,
-    cnt_type: ContentType,
-    key_generation_old: u8,
-    key_area_encryption_key_index: KeyAreaEncryptionKeyIndex,
-    cnt_size: usize,
-    program_id: u64,
-    cnt_idx: u32,
-    sdk_addon_ver: SdkAddonVersion,
-    key_generation: u8,
-    header_1_signature_key_generation: u8,
-    reserved: [u8; 0xE],
-    rights_id: [u8; 0x10],
-    fs_entries: [FileSystemEntry; MAX_FILESYSTEM_COUNT],
-    fs_header_hashes: [Sha256Hash; MAX_FILESYSTEM_COUNT],
-    encrypted_key_area: KeyArea,
-    reserved_1: [u8; 0x20],
-    reserved_2: [u8; 0x20],
-    reserved_3: [u8; 0x20],
-    reserved_4: [u8; 0x20],
-    reserved_5: [u8; 0x20],
-    reserved_6: [u8; 0x20]
+    pub header_rsa_sig_1: RSASignature,
+    pub header_rsa_sig_2: RSASignature,
+    pub magic: u32,
+    pub dist_type: DistributionType,
+    pub cnt_type: ContentType,
+    pub key_generation_old: u8,
+    pub key_area_encryption_key_index: KeyAreaEncryptionKeyIndex,
+    pub cnt_size: usize,
+    pub program_id: u64,
+    pub cnt_idx: u32,
+    pub sdk_addon_ver: SdkAddonVersion,
+    pub key_generation: u8,
+    pub header_1_signature_key_generation: u8,
+    pub reserved: [u8; 0xE],
+    pub rights_id: [u8; 0x10],
+    pub fs_entries: [FileSystemEntry; MAX_FILESYSTEM_COUNT],
+    pub fs_header_hashes: [Sha256Hash; MAX_FILESYSTEM_COUNT],
+    pub encrypted_key_area: KeyArea,
+    pub reserved_1: [u8; 0x20],
+    pub reserved_2: [u8; 0x20],
+    pub reserved_3: [u8; 0x20],
+    pub reserved_4: [u8; 0x20],
+    pub reserved_5: [u8; 0x20],
+    pub reserved_6: [u8; 0x20]
 }
 
 impl Header {
@@ -142,11 +142,21 @@ impl Header {
 
     #[inline]
     pub fn get_key_generation(self) -> u8 {
-        if self.key_generation_old < self.key_generation {
-            self.key_generation
+        let base_key_gen = {
+            if self.key_generation_old < self.key_generation {
+                self.key_generation
+            }
+            else {
+                self.key_generation_old
+            }
+        };
+
+        if base_key_gen > 0 {
+            // Both 0 and 1 are master key 0...
+            base_key_gen - 1
         }
         else {
-            self.key_generation_old
+            base_key_gen
         }
     }
 }
@@ -270,16 +280,12 @@ pub struct FileSystemHeader {
     reserved_5: [u8; 0x8]
 }
 
-pub struct FileSystem {
-    pub header: FileSystemHeader,
-    pub pfs0: Option<PFS0>,
-    pub romfs: Option<RomFs>
-}
-
 pub struct NCA {
     reader: Rc<RefCell<dyn ReadSeek>>,
-    header: Header,
-    pub filesystems: Vec<FileSystem>
+    keyset: Keyset,
+    dec_key_area: KeyArea,
+    pub header: Header,
+    pub fs_headers: Vec<FileSystemHeader>
 }
 
 impl NCA {
@@ -311,48 +317,81 @@ impl NCA {
             KeyAreaEncryptionKeyIndex::System => &keyset.key_area_keys_system[key_gen as usize]
         };
 
-        let ecb = Ecb::<Aes128, NoPadding>::new_var(key_area_key, &get_nintendo_tweak(0)).unwrap();
+        let ecb_iv = get_nintendo_tweak(0);
+        let ecb = Ecb::<Aes128, NoPadding>::new_var(key_area_key, &ecb_iv).unwrap();
         let dec_key_area = KeyArea::from_slice(ecb.decrypt(header.encrypted_key_area.as_mut_slice()).unwrap());
 
-        let mut filesystems: Vec<FileSystem> = Vec::new();
+        let mut actual_fs_headers: Vec<FileSystemHeader> = Vec::new();
         for i in 0..MAX_FILESYSTEM_COUNT {
-            let fs_entry = &header.fs_entries[i];
-            let fs_header = &fs_headers[i];
+            let fs_entry = header.fs_entries[i];
+            let fs_header = fs_headers[i];
 
-            let start = fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64;
-            let end = fs_entry.end_offset as u64 * MEDIA_UNIT_SIZE as u64;
-            let size = (end - start) as usize;
-
-            if size > 0 {
-                let mut fs = FileSystem {
-                    header: *fs_header,
-                    pfs0: None,
-                    romfs: None
-                };
-
-                match fs_header.fs_type {
-                    FileSystemType::PartitionFs => {
-                        let pfs0_abs_offset = start + unsafe { fs_header.hash_info.hierarchical_sha256.pfs0_offset };
-                        let pfs0_reader = new_shared(Aes128CtrReader::new(reader.clone(), pfs0_abs_offset, dec_key_area.aes_ctr_key.to_vec()));
-
-                        fs.pfs0 = Some(PFS0::new(pfs0_reader)?);
-                    },
-                    FileSystemType::RomFs => {
-                        let romfs_abs_offset = start + unsafe { fs_header.hash_info.hierarchical_integrity.levels.last().unwrap().offset };
-                        let romfs_reader = new_shared(Aes128CtrReader::new(reader.clone(), romfs_abs_offset, dec_key_area.aes_ctr_key.to_vec()));
-
-                        fs.romfs = Some(RomFs::new(romfs_reader)?);
-                    }
-                };
-
-                filesystems.push(fs);
+            let fs_start_offset = fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64;
+            if fs_start_offset > 0 {
+                // Only save non-empty/present filesystem headers
+                actual_fs_headers.push(fs_header);
             }
         }
 
         Ok(Self {
             reader: reader,
+            keyset: keyset,
+            dec_key_area: dec_key_area,
             header: header,
-            filesystems: filesystems
+            fs_headers: actual_fs_headers
         })
+    }
+
+    #[inline]
+    pub fn get_filesystem_count(&self) -> usize {
+        self.fs_headers.len()
+    }
+
+    pub fn open_pfs0_filesystem(&mut self, idx: usize) -> Result<PFS0> {
+        if idx >= self.fs_headers.len() {
+            return Err(Error::new(ErrorKind::InvalidInput, "Invalid filesystem index"));
+        }
+        
+        let fs_header = &self.fs_headers[idx];
+        let fs_entry = &self.header.fs_entries[idx];
+        if fs_header.fs_type != FileSystemType::PartitionFs {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("Invalid filesystem type (actual type: {:?})", fs_header.fs_type)));
+        }
+
+        let fs_start_offset = fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64;
+
+        match fs_header.encryption_type {
+            EncryptionType::AesCtr => {
+                let pfs0_abs_offset = fs_start_offset + unsafe { fs_header.hash_info.hierarchical_sha256.pfs0_offset };
+                let pfs0_reader = new_shared(Aes128CtrReader::new(self.reader.clone(), pfs0_abs_offset, fs_header.ctr, self.dec_key_area.aes_ctr_key.to_vec()));
+
+                PFS0::new(pfs0_reader)
+            },
+            enc_type => todo!("Unsupported crypto type: {:?}", enc_type)
+        }
+    }
+
+    pub fn open_romfs_filesystem(&mut self, idx: usize) -> Result<RomFs> {
+        if idx >= self.fs_headers.len() {
+            return Err(Error::new(ErrorKind::InvalidInput, "Invalid filesystem index"));
+        }
+        
+        let fs_header = &self.fs_headers[idx];
+        let fs_entry = &self.header.fs_entries[idx];
+        if fs_header.fs_type != FileSystemType::RomFs {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("Invalid filesystem type (actual type: {:?})", fs_header.fs_type)));
+        }
+
+        let fs_start_offset = fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64;
+
+        match fs_header.encryption_type {
+            EncryptionType::AesCtr => {
+                let romfs_offset = fs_start_offset + unsafe { fs_header.hash_info.hierarchical_integrity.levels.last().as_ref().unwrap().offset };
+                let romfs_reader = new_shared(Aes128CtrReader::new(self.reader.clone(), romfs_offset, fs_header.ctr, self.dec_key_area.aes_ctr_key.to_vec()));
+
+                RomFs::new(romfs_reader)
+            },
+            enc_type => todo!("Unsupported crypto type: {:?}", enc_type)
+        }
     }
 }

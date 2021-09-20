@@ -1,6 +1,5 @@
-use std::io::{BufReader, Result, BufRead};
+use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use hex::FromHex;
-
 use crate::util::ReadSeek;
 
 #[derive(Clone, Debug)]
@@ -35,7 +34,9 @@ impl Keyset {
         for line in lines {
             if let Ok(line_str) = line {
                 let items: Vec<_> = line_str.split("=").collect();
-                assert!(items.len() == 2);
+                if items.len() != 2 {
+                    return Err(Error::new(ErrorKind::InvalidInput, "Invalid keyset key-value"));
+                }
 
                 let mut key = String::from(items[0]);
                 key.retain(|c| !c.is_whitespace());

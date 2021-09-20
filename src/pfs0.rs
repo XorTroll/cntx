@@ -1,4 +1,4 @@
-use std::{cell::RefCell, io::{Result, SeekFrom}, rc::Rc};
+use std::{cell::RefCell, io::{Error, ErrorKind, Result, SeekFrom}, rc::Rc};
 use crate::util::{ReadSeek, reader_read_val};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -31,7 +31,9 @@ impl PFS0 {
 
     pub fn new(reader: Rc<RefCell<dyn ReadSeek>>) -> Result<Self> {
         let header: Header = reader_read_val(&reader)?;
-        assert_eq!(header.magic, Self::MAGIC);
+        if header.magic != Self::MAGIC {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("Invalid PFS0 magic: {:#X}", header.magic)));
+        }
 
         let mut file_entries: Vec<FileEntry> = Vec::with_capacity(header.file_count as usize);
 
@@ -72,15 +74,23 @@ impl PFS0 {
         Ok(file_names)
     }
 
-    pub fn get_file_size(&mut self, idx: usize) -> usize {
-        assert!(idx < self.file_entries.len());
+    pub fn get_file_size(&mut self, idx: usize) -> Result<usize> {
+        if idx >= self.file_entries.len() {
+            return Err(Error::new(ErrorKind::InvalidInput, "Invalid file index"));
+        }
 
-        self.file_entries[idx].size
+        Ok(self.file_entries[idx].size)
     }
 
     pub fn read_file(&mut self, idx: usize, offset: usize, buf: &mut [u8]) -> Result<usize> {
-        assert!(idx < self.file_entries.len());
+        if idx >= self.file_entries.len() {
+            return Err(Error::new(ErrorKind::InvalidInput, "Invalid file index"));
+        }
+
         let entry = &self.file_entries[idx];
+        if (offset + buf.len()) > entry.size {
+            return Err(Error::new(ErrorKind::UnexpectedEof, "EOF reached"));
+        }
 
         let base_offset = std::mem::size_of::<Header>() + std::mem::size_of::<FileEntry>() * self.header.file_count as usize + self.header.string_table_size as usize;
         let base_read_offset = base_offset + entry.offset as usize;

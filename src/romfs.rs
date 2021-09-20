@@ -88,14 +88,14 @@ impl RomFs {
         Ok((file_info, name))
     }
 
-    fn find_dir_info(&mut self, parent_dir_offset: u32, name: String) -> Result<u32> {
+    fn find_dir_offset(&mut self, parent_dir_offset: u32, name: String) -> Result<u32> {
         let hash = Self::compute_hash(parent_dir_offset, name.as_bytes(), self.header.dir_hash_table_size / std::mem::size_of::<u32>());
-        let first_dir_offset = self.read_dir_offset(hash).unwrap();
+        let first_dir_offset = self.read_dir_offset(hash)?;
 
         let mut cur_dir_offset = first_dir_offset;
         while cur_dir_offset != Self::INVALID_INFO_OFFSET {
             let (dir, dir_name) = self.read_dir_info(cur_dir_offset)?;
-            if dir_name == name {
+            if dir.parent_dir_offset == parent_dir_offset && dir_name == name {
                 return Ok(cur_dir_offset);
             }
 
@@ -107,19 +107,19 @@ impl RomFs {
 
     fn find_file_info(&mut self, parent_dir_offset: u32, name: String) -> Result<FileInfo> {
         let hash = Self::compute_hash(parent_dir_offset, name.as_bytes(), self.header.file_hash_table_size / std::mem::size_of::<u32>());
-        let first_dir_offset = self.read_file_offset(hash).unwrap();
+        let first_dir_offset = self.read_file_offset(hash)?;
 
         let mut cur_file_offset = first_dir_offset;
         while cur_file_offset != Self::INVALID_INFO_OFFSET {
             let (file, file_name) = self.read_file_info(cur_file_offset)?;
-            // println!("find_file name: {}", child_file_name);
             if file.parent_dir_offset == parent_dir_offset && file_name == name {
                 return Ok(file);
             }
+
             cur_file_offset = file.next_file_hash;
         }
 
-        Err(Error::new(ErrorKind::NotFound, "Directory not found"))
+        Err(Error::new(ErrorKind::NotFound, "File not found"))
     }
 
     fn find_file(&mut self, path: String) -> Result<FileInfo> {
@@ -128,7 +128,7 @@ impl RomFs {
 
         let mut cur_dir_offset = Self::ROOT_DIR_OFFSET;
         for dir_item in path_items {
-            cur_dir_offset = self.find_dir_info(cur_dir_offset, String::from(dir_item))?;
+            cur_dir_offset = self.find_dir_offset(cur_dir_offset, String::from(dir_item))?;
         }
 
         self.find_file_info(cur_dir_offset, String::from(file_item))
