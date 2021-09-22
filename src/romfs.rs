@@ -1,6 +1,6 @@
-use std::{cell::RefCell, io::{Error, Result, ErrorKind, SeekFrom}, rc::Rc};
+use std::io::{Error, Result, ErrorKind, SeekFrom};
 
-use crate::util::{ReadSeek, reader_read_val};
+use crate::util::{ReadSeek, Shared, reader_read_val};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 #[repr(C)]
@@ -40,7 +40,7 @@ pub struct FileInfo {
 }
 
 pub struct RomFs {
-    reader: Rc<RefCell<dyn ReadSeek>>,
+    reader: Shared<dyn ReadSeek>,
     header: Header
 }
 
@@ -59,31 +59,31 @@ impl RomFs {
     }
 
     fn read_dir_offset(&mut self, hash: u32) -> Result<u32> {
-        self.reader.borrow_mut().seek(SeekFrom::Start(self.header.dir_hash_table_offset + hash as u64 * std::mem::size_of::<u32>() as u64))?;
+        self.reader.lock().unwrap().seek(SeekFrom::Start(self.header.dir_hash_table_offset + hash as u64 * std::mem::size_of::<u32>() as u64))?;
         reader_read_val(&self.reader)
     }
 
     fn read_file_offset(&mut self, hash: u32) -> Result<u32> {
-        self.reader.borrow_mut().seek(SeekFrom::Start(self.header.file_hash_table_offset + hash as u64 * std::mem::size_of::<u32>() as u64))?;
+        self.reader.lock().unwrap().seek(SeekFrom::Start(self.header.file_hash_table_offset + hash as u64 * std::mem::size_of::<u32>() as u64))?;
         reader_read_val(&self.reader)
     }
 
     fn read_dir_info(&mut self, offset: u32) -> Result<(DirectoryInfo, String)> {
-        self.reader.borrow_mut().seek(SeekFrom::Start(self.header.dir_table_offset + offset as u64))?;
+        self.reader.lock().unwrap().seek(SeekFrom::Start(self.header.dir_table_offset + offset as u64))?;
         let dir_info: DirectoryInfo = reader_read_val(&self.reader)?;
 
         let mut name_data = vec![0u8; dir_info.name_len as usize]; 
-        self.reader.borrow_mut().read_exact(&mut name_data)?;
+        self.reader.lock().unwrap().read_exact(&mut name_data)?;
         let name = String::from_utf8(name_data).unwrap();
         Ok((dir_info, name))
     }
 
     fn read_file_info(&mut self, offset: u32) -> Result<(FileInfo, String)> {
-        self.reader.borrow_mut().seek(SeekFrom::Start(self.header.file_table_offset + offset as u64))?;
+        self.reader.lock().unwrap().seek(SeekFrom::Start(self.header.file_table_offset + offset as u64))?;
         let file_info: FileInfo = reader_read_val(&self.reader)?;
 
         let mut name_data = vec![0u8; file_info.name_len as usize]; 
-        self.reader.borrow_mut().read_exact(&mut name_data)?;
+        self.reader.lock().unwrap().read_exact(&mut name_data)?;
         let name = String::from_utf8(name_data).unwrap();
         Ok((file_info, name))
     }
@@ -151,11 +151,11 @@ impl RomFs {
 
         let file_data_offset = self.header.file_data_offset + file_info.data_offset;
         let read_offset = file_data_offset + offset;
-        self.reader.borrow_mut().seek(SeekFrom::Start(read_offset))?;
-        self.reader.borrow_mut().read(buf)
+        self.reader.lock().unwrap().seek(SeekFrom::Start(read_offset))?;
+        self.reader.lock().unwrap().read(buf)
     }
 
-    pub fn new(reader: Rc<RefCell<dyn ReadSeek>>) -> Result<Self> {
+    pub fn new(reader: Shared<dyn ReadSeek>) -> Result<Self> {
         let header: Header = reader_read_val(&reader)?;
 
         Ok(Self {

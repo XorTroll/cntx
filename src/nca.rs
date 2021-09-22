@@ -1,16 +1,14 @@
-use std::cell::RefCell;
 use std::io::{Error, ErrorKind, Result};
-use std::rc::Rc;
 use aes::Aes128;
 use aes::NewBlockCipher;
 use block_modes::Ecb;
 use block_modes::BlockMode;
 use block_modes::block_padding::NoPadding;
 use xts_mode::Xts128;
-use crate::key::{self, Keyset};
+use crate::key::Keyset;
 use crate::pfs0::PFS0;
 use crate::romfs::RomFs;
-use crate::util::{Aes128CtrReader, ReadSeek, get_nintendo_tweak, new_shared};
+use crate::util::{Aes128CtrReader, ReadSeek, Shared, get_nintendo_tweak, new_shared};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -281,7 +279,7 @@ pub struct FileSystemHeader {
 }
 
 pub struct NCA {
-    reader: Rc<RefCell<dyn ReadSeek>>,
+    reader: Shared<dyn ReadSeek>,
     keyset: Keyset,
     dec_key_area: KeyArea,
     pub header: Header,
@@ -289,7 +287,7 @@ pub struct NCA {
 }
 
 impl NCA {
-    pub fn new(reader: Rc<RefCell<dyn ReadSeek>>, keyset: Keyset) -> Result<Self> {
+    pub fn new(reader: Shared<dyn ReadSeek>, keyset: Keyset) -> Result<Self> {
         let cipher_1 = Aes128::new_varkey(&keyset.header_key[..0x10]).unwrap();
         let cipher_2 = Aes128::new_varkey(&keyset.header_key[0x10..]).unwrap();
         let xts = Xts128::new(cipher_1, cipher_2);
@@ -300,7 +298,7 @@ impl NCA {
         let header_buf = unsafe {
             std::slice::from_raw_parts_mut(&mut header as *mut _ as *mut u8, std::mem::size_of::<Header>())
         };
-        reader.borrow_mut().read_exact(header_buf)?;
+        reader.lock().unwrap().read_exact(header_buf)?;
         xts.decrypt_area(header_buf, SECTOR_SIZE, 0, get_nintendo_tweak);
 
         if header.magic != Header::MAGIC {
@@ -311,7 +309,7 @@ impl NCA {
         let fs_headers_buf = unsafe {
             std::slice::from_raw_parts_mut(fs_headers.as_mut_ptr() as *mut u8, std::mem::size_of::<FileSystemHeader>() * fs_headers.len())
         };
-        reader.borrow_mut().read_exact(fs_headers_buf)?;
+        reader.lock().unwrap().read_exact(fs_headers_buf)?;
         xts.decrypt_area(fs_headers_buf, SECTOR_SIZE, 2, get_nintendo_tweak);
 
         let key_gen = header.get_key_generation();

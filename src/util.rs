@@ -1,15 +1,16 @@
-use std::cell::RefCell;
 use std::io::{Read, Result, Seek, SeekFrom};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use aes::Aes128;
 use ctr::Ctr128;
 use ctr::cipher::NewStreamCipher;
 use ctr::cipher::StreamCipher;
 
-pub trait ReadSeek: Read + Seek {
-}
+pub type Shared<T> = Arc<Mutex<T>>;
 
-pub fn reader_read_val<T>(reader: &Rc<RefCell<dyn ReadSeek>>) -> Result<T> {
+pub trait ReadSeek: Read + Seek + Send + Sync {}
+impl<R: Read + Seek + Send + Sync> ReadSeek for R {}
+
+pub fn reader_read_val<T>(reader: &Shared<dyn ReadSeek>) -> Result<T> {
     let mut t: T = unsafe {
         std::mem::zeroed()
     };
@@ -17,12 +18,10 @@ pub fn reader_read_val<T>(reader: &Rc<RefCell<dyn ReadSeek>>) -> Result<T> {
     let t_buf = unsafe {
         std::slice::from_raw_parts_mut(&mut t as *mut _ as *mut u8, std::mem::size_of::<T>())
     };
-    reader.borrow_mut().read_exact(t_buf)?;
+    reader.lock().unwrap().read_exact(t_buf)?;
 
     Ok(t)
 }
-
-impl<R: Read + Seek> ReadSeek for R {}
 
 pub struct DataReader {
     offset: usize,
@@ -73,14 +72,14 @@ pub fn get_nintendo_tweak(sector_index: u128) -> [u8; 0x10] {
 pub struct Aes128CtrReader {
     base_offset: u64,
     offset: u64,
-    base_reader: Rc<RefCell<dyn ReadSeek>>,
+    base_reader: Shared<dyn ReadSeek>,
     ctr: u64,
     key: Vec<u8>
 }
 
 impl Aes128CtrReader {
-    pub fn new(base_reader: Rc<RefCell<dyn ReadSeek>>, base_offset: u64, ctr: u64, key: Vec<u8>) -> Self {
-        base_reader.borrow_mut().seek(SeekFrom::Start(base_offset)).unwrap();
+    pub fn new(base_reader: Shared<dyn ReadSeek>, base_offset: u64, ctr: u64, key: Vec<u8>) -> Self {
+        base_reader.lock().unwrap().seek(SeekFrom::Start(base_offset)).unwrap();
         Self {
             base_offset: base_offset,
             offset: base_offset,
@@ -103,7 +102,7 @@ pub const fn align_up(value: usize, align: usize) -> usize {
 
 impl Read for Aes128CtrReader {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let offset = self.base_reader.borrow_mut().stream_position()?;
+        let offset = self.base_reader.lock().unwrap().stream_position()?;
         let aligned_offset = align_down(offset, 0x10);
         let diff = (offset - aligned_offset) as i64;
 
@@ -112,7 +111,7 @@ impl Read for Aes128CtrReader {
         let read_buf_size_diff = (read_buf_size - read_buf_size_raw) as i64;
         let mut read_buf = vec![0u8; read_buf_size];
         self.seek(SeekFrom::Current(-diff))?;
-        let read_size = self.base_reader.borrow_mut().read(&mut read_buf)? as i64;
+        let read_size = self.base_reader.lock().unwrap().read(&mut read_buf)? as i64;
         self.seek(SeekFrom::Current(read_size - read_buf_size_diff))?;
 
         let iv = get_nintendo_tweak(((aligned_offset as u128) >> 4) | ((self.ctr as u128) << 64));
@@ -141,11 +140,11 @@ impl Seek for Aes128CtrReader {
             }
         }
 
-        self.base_reader.borrow_mut().seek(SeekFrom::Start(self.offset))
+        self.base_reader.lock().unwrap().seek(SeekFrom::Start(self.offset))
     }
 }
 
 #[inline]
-pub fn new_shared<T>(t: T) -> Rc<RefCell<T>> {
-    Rc::new(RefCell::new(t))
+pub fn new_shared<T>(t: T) -> Shared<T> {
+    Arc::new(Mutex::new(t))
 }

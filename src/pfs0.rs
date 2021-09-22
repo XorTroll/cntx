@@ -1,5 +1,5 @@
-use std::{cell::RefCell, io::{Error, ErrorKind, Result, SeekFrom}, rc::Rc};
-use crate::util::{ReadSeek, reader_read_val};
+use std::io::{Error, ErrorKind, Result, SeekFrom};
+use crate::util::{ReadSeek, Shared, reader_read_val};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 #[repr(C)]
@@ -24,14 +24,14 @@ pub struct FileEntry {
 }
 
 pub struct PFS0 {
-    reader: Rc<RefCell<dyn ReadSeek>>,
+    reader: Shared<dyn ReadSeek>,
     header: Header,
     file_entries: Vec<FileEntry>,
     string_table: Vec<u8>
 }
 
 impl PFS0 {
-    pub fn new(reader: Rc<RefCell<dyn ReadSeek>>) -> Result<Self> {
+    pub fn new(reader: Shared<dyn ReadSeek>) -> Result<Self> {
         let header: Header = reader_read_val(&reader)?;
         if header.magic != Header::MAGIC {
             return Err(Error::new(ErrorKind::InvalidInput, "Invalid PFS0 magic"));
@@ -45,7 +45,7 @@ impl PFS0 {
         }
 
         let mut str_table = vec![0u8; header.string_table_size as usize];
-        reader.borrow_mut().read_exact(&mut str_table)?;
+        reader.lock().unwrap().read_exact(&mut str_table)?;
 
         Ok(Self {
             reader: reader,
@@ -98,7 +98,7 @@ impl PFS0 {
         let base_read_offset = base_offset + entry.offset as usize;
         let read_offset = base_read_offset + offset;
 
-        self.reader.borrow_mut().seek(SeekFrom::Start(read_offset as u64))?;
-        self.reader.borrow_mut().read(buf)
+        self.reader.lock().unwrap().seek(SeekFrom::Start(read_offset as u64))?;
+        self.reader.lock().unwrap().read(buf)
     }
 }
