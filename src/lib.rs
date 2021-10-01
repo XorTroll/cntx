@@ -85,7 +85,7 @@ mod tests {
         let keyset = key::Keyset::from(File::open("prod.keys").unwrap()).unwrap();
 
         let nca_reader = new_shared(File::open("test.nca").unwrap());
-        let mut nca = nca::NCA::new(nca_reader, keyset).unwrap();
+        let mut nca = nca::NCA::new(nca_reader, &keyset, None).unwrap();
 
         for i in 0..nca.get_filesystem_count() {
             if let Ok(mut pfs0) = nca.open_pfs0_filesystem(i) {
@@ -128,10 +128,10 @@ mod tests {
                 println!("Reading system NCA: {:?}", dir_entry.path());
                 
                 let nca_reader = new_shared(File::open(dir_entry.path()).unwrap());
-                if let Ok(mut nca) = nca::NCA::new(nca_reader, keyset.clone()) {
+                if let Ok(mut nca) = nca::NCA::new(nca_reader, &keyset, None) {
                     println!(" - Program ID: {:#018X}", nca.header.program_id);
 
-                    if nca.header.program_id == 0x0100000000000809 {
+                    if nca.header.program_id == 0x0100000000000809 && nca.header.cnt_type == nca::ContentType::Data {
                         if let Ok(mut romfs) = nca.open_romfs_filesystem(0) {
                             let system_version_file = String::from("file");
                             if romfs.exists_file(system_version_file.clone()) {
@@ -147,6 +147,51 @@ mod tests {
                                 println!("Done!");
                                 break;
                             }
+                        }
+                    }
+                }
+                else {
+                    panic!("NCA failed...");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_browserdll_romfs_iter() {
+        println!("NCA test...");
+
+        let keyset = key::Keyset::from(File::open("prod.keys").unwrap()).unwrap();
+
+        for entry in read_dir("registered").unwrap() {
+            if let Ok(dir_entry) = entry {
+                println!("Reading system NCA: {:?}", dir_entry.path());
+                
+                let nca_reader = new_shared(File::open(dir_entry.path()).unwrap());
+                if let Ok(mut nca) = nca::NCA::new(nca_reader, &keyset, None) {
+                    println!(" - Program ID: {:#018X}", nca.header.program_id);
+
+                    if nca.header.program_id == 0x0100000000000803 && nca.header.cnt_type == nca::ContentType::Data {
+                        if let Ok(mut romfs) = nca.open_romfs_filesystem(0) {
+                            let base_path = String::from("lyt");
+                            println!("Listing BrowserDll stuff at rom:/{}...", base_path.clone());
+
+                            let mut dir_iter = romfs.open_dir_iterator(base_path.clone()).unwrap();
+                            loop {
+                                if let Ok(dir_name) = dir_iter.next_dir() {
+                                    println!(" - [D] rom:/{}/{}", base_path.clone(), dir_name);
+                                }
+                                else if let Ok((file_name, _file_size)) = dir_iter.next_file() {
+                                    println!(" - [F] rom:/{}/{}", base_path.clone(), file_name);
+                                }
+                                else {
+                                    println!("EOF!");
+                                    break;
+                                }
+                            }
+
+                            println!("Done!");
+                            break;
                         }
                     }
                 }

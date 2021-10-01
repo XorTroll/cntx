@@ -7,7 +7,8 @@ pub struct Keyset {
     pub header_key: [u8; 0x20],
     pub key_area_keys_application: Vec<[u8; 0x10]>,
     pub key_area_keys_ocean: Vec<[u8; 0x10]>,
-    pub key_area_keys_system: Vec<[u8; 0x10]>
+    pub key_area_keys_system: Vec<[u8; 0x10]>,
+    pub title_key_encryption_keys: Vec<[u8; 0x10]>
 }
 
 impl Keyset {
@@ -28,7 +29,8 @@ impl Keyset {
             header_key: [0; 0x20],
             key_area_keys_application: Vec::new(),
             key_area_keys_ocean: Vec::new(),
-            key_area_keys_system: Vec::new()
+            key_area_keys_system: Vec::new(),
+            title_key_encryption_keys: Vec::new()
         };
 
         for line in lines {
@@ -68,6 +70,13 @@ impl Keyset {
                     }
 
                     keyset.key_area_keys_system.insert(idx, key_data.clone().try_into().unwrap());
+                }
+                else if let Some(idx) = Self::get_key_name_idx("titlekek_", &key) {
+                    if idx >= keyset.title_key_encryption_keys.len() {
+                        keyset.title_key_encryption_keys.resize(idx, [0; 0x10]);
+                    }
+
+                    keyset.title_key_encryption_keys.insert(idx, key_data.clone().try_into().unwrap());
                 }
             }
         }

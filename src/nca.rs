@@ -81,6 +81,14 @@ pub struct KeyArea {
 }
 
 impl KeyArea {
+    pub fn empty() -> Self {
+        Self {
+            aes_xts_key: [0; 0x20],
+            aes_ctr_key: [0; 0x10],
+            unk_key: [0; 0x10]
+        }
+    }
+    
     pub fn from_slice(slice: &[u8]) -> Self {
         Self {
             aes_xts_key: slice[0..0x20].try_into().unwrap(),
@@ -254,9 +262,19 @@ pub struct PatchInfo {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(C)]
+pub struct BucketInfo {
+    offset: u64,
+    size: usize,
+    header: [u8; 0x10]
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[repr(C)]
 pub struct SparseInfo {
-    data_1: [u8; 0x20],
-    data_2: [u8; 0x10]
+    pub bucket: BucketInfo,
+    pub physical_offset: u64,
+    pub generation: u16,
+    pub reserved: [u8; 6]
 }
 
 #[derive(Copy, Clone)]
@@ -280,14 +298,14 @@ pub struct FileSystemHeader {
 
 pub struct NCA {
     reader: Shared<dyn ReadSeek>,
-    keyset: Keyset,
     dec_key_area: KeyArea,
+    dec_title_key: Option<[u8; 0x10]>,
     pub header: Header,
     pub fs_headers: Vec<FileSystemHeader>
 }
 
 impl NCA {
-    pub fn new(reader: Shared<dyn ReadSeek>, keyset: Keyset) -> Result<Self> {
+    pub fn new(reader: Shared<dyn ReadSeek>, keyset: &Keyset, title_key: Option<[u8; 0x10]>) -> Result<Self> {
         let cipher_1 = Aes128::new_varkey(&keyset.header_key[..0x10]).unwrap();
         let cipher_2 = Aes128::new_varkey(&keyset.header_key[0x10..]).unwrap();
         let xts = Xts128::new(cipher_1, cipher_2);
@@ -319,13 +337,33 @@ impl NCA {
             KeyAreaEncryptionKeyIndex::System => &keyset.key_area_keys_system
         };
         if key_gen as usize >= key_area_keys.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, format!("Key generation {} not supported by the loaded keyset", key_gen)));
+            return Err(Error::new(ErrorKind::InvalidInput, format!("Key area key of kind {:?} (key_area_key_*_*) not present for key generation {}", header.key_area_encryption_key_index, key_gen)));
         }
         let key_area_key = &key_area_keys[key_gen as usize];
 
-        let ecb_iv = get_nintendo_tweak(0);
-        let ecb = Ecb::<Aes128, NoPadding>::new_var(key_area_key, &ecb_iv).unwrap();
-        let dec_key_area = KeyArea::from_slice(ecb.decrypt(header.encrypted_key_area.as_mut_slice()).unwrap());
+        let mut dec_key_area = KeyArea::empty();
+        let mut dec_title_key: Option<[u8; 0x10]> = None;
+
+        if header.rights_id != [0; 0x10] {
+            if let Some(mut enc_title_key) = title_key {
+                if key_gen as usize >= keyset.title_key_encryption_keys.len() {
+                    return Err(Error::new(ErrorKind::InvalidInput, format!("Title key encryption key (titlekek_*) not present for key generation {}", key_gen)));
+                }
+
+                let title_key_encryption_key = keyset.title_key_encryption_keys[key_gen as usize];
+                let title_key_ecb_iv = [0; 0x10];
+                let title_key_ecb = Ecb::<Aes128, NoPadding>::new_var(&title_key_encryption_key, &title_key_ecb_iv).unwrap();
+                dec_title_key = Some(title_key_ecb.decrypt(&mut enc_title_key).unwrap().try_into().unwrap());
+            }
+            else {
+                return Err(Error::new(ErrorKind::InvalidInput, format!("NCA requires title key to be decrypted and none was supplied")));
+            }
+        }
+        else {
+            let dec_key_area_ecb_iv = get_nintendo_tweak(0);
+            let dec_key_area_ecb = Ecb::<Aes128, NoPadding>::new_var(key_area_key, &dec_key_area_ecb_iv).unwrap();
+            dec_key_area = KeyArea::from_slice(dec_key_area_ecb.decrypt(header.encrypted_key_area.as_mut_slice()).unwrap());
+        }
 
         let mut actual_fs_headers: Vec<FileSystemHeader> = Vec::new();
         for i in 0..MAX_FILESYSTEM_COUNT {
@@ -341,8 +379,8 @@ impl NCA {
 
         Ok(Self {
             reader: reader,
-            keyset: keyset,
             dec_key_area: dec_key_area,
+            dec_title_key: dec_title_key,
             header: header,
             fs_headers: actual_fs_headers
         })
@@ -353,23 +391,49 @@ impl NCA {
         self.fs_headers.len()
     }
 
+    pub fn get_aes_ctr_decrypt_key(&self) -> Vec<u8> {
+        if let Some(dec_title_key) = self.dec_title_key {
+            dec_title_key.to_vec()
+        }
+        else {
+            self.dec_key_area.aes_ctr_key.to_vec()
+        }
+    }
+
+    fn get_fs_offset(&self, idx: usize) -> u64 {
+        let fs_header = &self.fs_headers[idx];
+        let fs_entry = &self.header.fs_entries[idx];
+
+        if fs_header.sparse_info.generation != 0 {
+            todo!("Sparse section NCA support")
+        }
+        else {
+            fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64
+        }
+    }
+
+    #[inline]
+    pub fn needs_title_key_crypto(&self) -> bool {
+        self.header.rights_id != [0; 0x10]
+    }
+
     pub fn open_pfs0_filesystem(&mut self, idx: usize) -> Result<PFS0> {
         if idx >= self.fs_headers.len() {
             return Err(Error::new(ErrorKind::InvalidInput, "Invalid filesystem index"));
         }
         
         let fs_header = &self.fs_headers[idx];
-        let fs_entry = &self.header.fs_entries[idx];
         if fs_header.fs_type != FileSystemType::PartitionFs {
             return Err(Error::new(ErrorKind::InvalidInput, format!("Invalid filesystem type (actual type: {:?})", fs_header.fs_type)));
         }
 
-        let fs_start_offset = fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64;
+        let fs_start_offset = self.get_fs_offset(idx);
 
         match fs_header.encryption_type {
             EncryptionType::AesCtr => {
                 let pfs0_abs_offset = fs_start_offset + unsafe { fs_header.hash_info.hierarchical_sha256.pfs0_offset };
-                let pfs0_reader = new_shared(Aes128CtrReader::new(self.reader.clone(), pfs0_abs_offset, fs_header.ctr, self.dec_key_area.aes_ctr_key.to_vec()));
+                let dec_key = self.get_aes_ctr_decrypt_key();
+                let pfs0_reader = new_shared(Aes128CtrReader::new(self.reader.clone(), pfs0_abs_offset, fs_header.ctr, dec_key));
 
                 PFS0::new(pfs0_reader)
             },
@@ -383,17 +447,17 @@ impl NCA {
         }
         
         let fs_header = &self.fs_headers[idx];
-        let fs_entry = &self.header.fs_entries[idx];
         if fs_header.fs_type != FileSystemType::RomFs {
             return Err(Error::new(ErrorKind::InvalidInput, format!("Invalid filesystem type (actual type: {:?})", fs_header.fs_type)));
         }
 
-        let fs_start_offset = fs_entry.start_offset as u64 * MEDIA_UNIT_SIZE as u64;
+        let fs_start_offset = self.get_fs_offset(idx);
 
         match fs_header.encryption_type {
             EncryptionType::AesCtr => {
                 let romfs_offset = fs_start_offset + unsafe { fs_header.hash_info.hierarchical_integrity.levels.last().as_ref().unwrap().offset };
-                let romfs_reader = new_shared(Aes128CtrReader::new(self.reader.clone(), romfs_offset, fs_header.ctr, self.dec_key_area.aes_ctr_key.to_vec()));
+                let dec_key = self.get_aes_ctr_decrypt_key();
+                let romfs_reader = new_shared(Aes128CtrReader::new(self.reader.clone(), romfs_offset, fs_header.ctr, dec_key));
 
                 RomFs::new(romfs_reader)
             },
