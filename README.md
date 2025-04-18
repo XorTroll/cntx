@@ -2,6 +2,8 @@
 
 > Pure Rust library to explore various Nintendo Switch file formats
 
+## **IMPORTANT!** this project is no longer continued.
+
 ## Usage
 
 ```toml
